@@ -1,0 +1,323 @@
+# vim: set ts=2 sw=2 et
+name: Ubuntu-CMake-Builds
+
+on:
+  workflow_dispatch:
+    inputs:
+      checkout-ref:
+        required: true
+        description: "The ref we want to compile"
+        type: string
+      full-matrix:
+        required: true
+        description: "Build the full matrix"
+        type: boolean
+
+permissions:
+  contents: read
+
+env:
+  CRC32C_VERSION: 1.1.2
+    
+jobs:
+  cmake:
+    name: cmake + ${{ matrix.os }} + ${{ matrix.shard }}
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: 'read'
+    strategy:
+      # Continue other builds even if one fails
+      fail-fast: false
+      matrix:
+        exclude-from-full-trick: [ true ]
+        os: [ ubuntu-24.04 ]
+        shard: [ Core2 ]
+        exclude:
+        # Only full builds include shards with generated code.
+        - exclude-from-full-trick: ${{ ! inputs.full-matrix }}
+          shard: Compute
+        - exclude-from-full-trick: ${{ ! inputs.full-matrix }}
+          shard: AIPlatform
+        - exclude-from-full-trick: ${{ ! inputs.full-matrix }}
+          shard: Shard1
+        - exclude-from-full-trick: ${{ ! inputs.full-matrix }}
+          shard: Shard2
+        - exclude-from-full-trick: ${{ ! inputs.full-matrix }}
+          shard: Shard3
+        - exclude-from-full-trick: ${{ ! inputs.full-matrix }}
+          shard: Shard4
+        - exclude-from-full-trick: ${{ ! inputs.full-matrix }}
+          shard: Shard5
+        - exclude-from-full-trick: ${{ ! inputs.full-matrix }}
+          shard: Other
+    steps:
+    - name: Install prerequisites
+      run: |
+        apt update
+        # observed dependencies
+        apt --no-install-recommends install -y cmake
+        # specified dependencies
+        apt --no-install-recommends install -y \
+            libabsl-dev \
+            libcurl4-openssl-dev \
+            libgrpc++-dev \
+            protobuf-compiler-grpc \
+            libprotobuf-dev \
+            protobuf-compiler \
+            nlohmann-json3-dev
+    
+    - name: Dynamic Configuration
+      id: dynamic
+      shell: bash
+      run: |
+        echo "vcpkg-version=$(cat ci/etc/vcpkg-version.txt)" >> "${GITHUB_OUTPUT}"
+        core1_features=(
+          bigtable
+          spanner
+        )
+        core2_features=(
+          pubsub
+          pubsublite
+          storage
+          storage_grpc
+        )
+        core3_features=(
+          pubsub
+          pubsublite
+        )
+        # These are the libraries with the most "clients". To build the list
+        # run something like this and find the midpoint:
+        #
+        # git grep -l 'class.*Client' 'google/cloud/**_client.h' |
+        #    egrep -v "(bigtable/|internal/|pubsub/|pubsublite/|spanner/|storage/|testing_util/)" |
+        #    cut -f -3 -d/| sort | uniq -c | sort -n |
+        #    awk '{ s += $1; print s, $0}'
+        #
+        shard1_features=(
+          dataproc
+          monitoring
+          retail
+          discoveryengine
+        )
+        shard2_features=(
+          servicecontrol
+          speech
+          support
+          video
+          datacatalog
+          iam
+          run
+          talent
+          contentwarehouse
+          dataplex
+          kms
+          bigquery
+          resourcemanager
+          appengine
+        )
+        shard3_features=(
+          channel
+          cloudbuild
+          cloudcontrolspartner
+          composer
+          containeranalysis
+          datastore
+          eventarc
+          functions
+          iap
+          language
+          metastore
+          networkconnectivity
+          networkservices
+          policytroubleshooter
+          profiler
+          redis
+          securitycenter
+          servicedirectory
+          tpu
+          trace
+          vision
+          workflows
+          beyondcorp
+          billing
+          binaryauthorization
+          gkemulticloud
+          logging
+          notebooks
+          osconfig
+        )
+        shard4_features=(
+          domains
+          edgecontainer
+          edgenetwork
+          essentialcontacts
+          filestore
+          ids
+          managedidentities
+          managedkafka
+          memcache
+          migrationcenter
+          netapp
+          networkmanagement
+          networksecurity
+          optimization
+          orgpolicy
+          oslogin
+          policysimulator
+          privateca
+          privilegedaccessmanager
+          publicca
+          rapidmigrationassessment
+          recaptchaenterprise
+          recommender
+          scheduler
+          secretmanager
+          securesourcemanager
+          securitycentermanagement
+          servicehealth
+          servicemanagement
+          serviceusage
+          shell
+          storagecontrol
+          storageinsights
+          storagetransfer
+          tasks
+          telcoautomation
+          texttospeech
+          timeseriesinsights
+          translate
+          videointelligence
+          vmmigration
+          vmwareengine
+          vpcaccess
+          webrisk
+          websecurityscanner
+          workstations
+          automl
+        )
+        shard5_features=(
+          bigquerycontrol
+          dialogflow_cx
+          dialogflow_es
+          gkebackup
+          gkeconnect
+          gkehub
+          sql
+        )
+        if [[ "${{ matrix.shard }}" == "Core1" ]]; then
+          features="$(printf ",%s" "${core1_features[@]}")"
+          echo "features=${features:1}" >> "${GITHUB_OUTPUT}"
+        elif [[ "${{ matrix.shard }}" == "Core2" ]]; then
+          features="$(printf ",%s" "${core2_features[@]}")"
+          echo "features=${features:1}" >> "${GITHUB_OUTPUT}"
+        elif [[ "${{ matrix.shard }}" == "Core3" ]]; then
+          features="$(printf ",%s" "${core3_features[@]}")"
+          echo "features=${features:1}" >> "${GITHUB_OUTPUT}"
+        elif [[ "${{matrix.shard}}" == "Compute" ]]; then
+          echo "features=compute" >> "${GITHUB_OUTPUT}"
+        elif [[ "${{matrix.shard}}" == "AIPlatform" ]]; then
+          echo "features=aiplatform" >> "${GITHUB_OUTPUT}"
+        elif [[ "${{ matrix.shard }}" == "Shard1" ]]; then
+          features="$(printf ",%s" "${shard1_features[@]}")"
+          echo "features=${features:1}" >> "${GITHUB_OUTPUT}"
+        elif [[ "${{ matrix.shard }}" == "Shard2" ]]; then
+          features="$(printf ",%s" "${shard2_features[@]}")"
+          echo "features=${features:1}" >> "${GITHUB_OUTPUT}"
+        elif [[ "${{ matrix.shard }}" == "Shard3" ]]; then
+          features="$(printf ",%s" "${shard3_features[@]}")"
+          echo "features=${features:1}" >> "${GITHUB_OUTPUT}"
+        elif [[ "${{ matrix.shard }}" == "Shard4" ]]; then
+          features="$(printf ",%s" "${shard4_features[@]}")"
+          echo "features=${features:1}" >> "${GITHUB_OUTPUT}"
+        elif [[ "${{ matrix.shard }}" == "Shard5" ]]; then
+          features="$(printf ",%s" "${shard5_features[@]}")"
+          echo "features=${features:1}" >> "${GITHUB_OUTPUT}"
+        else
+          skipped_features=("${core1_features[@]}")
+          skipped_features+=("${core2_features[@]}")
+          skipped_features+=("${core3_features[@]}")
+          skipped_features+=(compute)
+          skipped_features+=(aiplatform)
+          skipped_features+=("${shard1_features[@]}")
+          skipped_features+=("${shard2_features[@]}")
+          skipped_features+=("${shard3_features[@]}")
+          skipped_features+=("${shard4_features[@]}")
+          skipped_features+=("${shard5_features[@]}")
+          skipped="$(printf ",-%s" "${skipped_features[@]}")"
+          echo "features=__ga_libraries__,__experimental_libraries__,${skipped:1}" >> "${GITHUB_OUTPUT}"
+        fi
+    
+    - name: Check out code
+      uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5
+      with:
+        ref: ${{ inputs.checkout-ref }}
+    
+    - name: Download google-crc32c
+      run: |
+        # ***** latest version? or version on GitHub README
+        curl --silent --remote-name --location https://github.com/google/crc32c/archive/${CRC32C_VERSION}.tar.gz
+        tar xfz ${CRC32C_VERSION}.tar.gz
+    
+    - name: Configure google-crc32c
+      working-directory: crc32c-${{ env.CRC32C_VERSION }}/
+      run: |
+        # no need to build shared libraries; only ever used for this SDK
+        cmake -S . -B build \
+          -DCMAKE_BUILD_TYPE=Release \
+          -DBUILD_SHARED_LIBS=no \
+          -DCRC32C_BUILD_TESTS=OFF \
+          -DCRC32C_BUILD_BENCHMARKS=OFF \
+          -DCRC32C_USE_GLOG=OFF
+    
+    - name: Build google-crc32c
+      working-directory: crc32c-${{ env.CRC32C_VERSION }}/
+      run: cmake --build build
+    
+    - name: Install google-crc32c
+      working-directory: crc32c-${{ env.CRC32C_VERSION }}/
+      run: cmake --build build --target install
+    
+    - name: Package google-crc32c
+      working-directory: crc32c-${{ env.CRC32C_VERSION }}/build
+      run: |
+        cpack -G DEB \
+          -D CPACK_PACKAGE_NAME="google-crc32c" \
+          -D CPACK_PACKAGE_VERSION=$CRC32C_VERSION \
+          -D CPACK_PACKAGE_VENDOR="Google" \
+          -D CPACK_PACKAGE_DESCRIPTION="Google CRC32C Libraries" \
+          -D CPACK_INSTALL_CMAKE_PROJECTS="$(pwd);google-crc32c;ALL;/" \
+          -D CPACK_DEBIAN_PACKAGE_MAINTAINER="dev@hekster.org" \
+          -D CPACK_DEBIAN_PACKAGE_SECTION="devel" \
+          -D CPACK_DEBIAN_PACKAGE_PRIORITY="optional" \
+          -D CPACK_DEBIAN_PACKAGE_SHLIBDEPS=OFF \
+          -D CPACK_PACKAGE_FILE_NAME="google-crc32c-${CRC32C_VERSION}-Linux-arm64" \
+          -D CPACK_CMAKE_GENERATOR="Unix Makefiles"
+    
+    - name: Configure google-cloud-cpp
+      run: |
+        cmake -S . -B build \
+          -DCMAKE_BUILD_TYPE=Release \
+          -DBUILD_TESTING=OFF \
+          -DGOOGLE_CLOUD_CPP_WITH_MOCKS=OFF \
+          -DGOOGLE_CLOUD_CPP_ENABLE_EXAMPLES=OFF \
+          -DGOOGLE_CLOUD_CPP_ENABLE=${{ matrix.shard }}
+    
+    - name: Build google-cloud-cpp
+      run: cmake --build build -j$(nproc)
+    
+    - name: Package google-cloud-cpp
+      working-directory: build/
+      run: |
+        cpack -G DEB \
+          -D CPACK_PACKAGE_NAME="google-cloud-cpp-${{ matrix.shard }}" \
+          -D CPACK_PACKAGE_VERSION="2.44.0" \
+          -D CPACK_PACKAGE_VENDOR=Google \
+          -D CPACK_PACKAGE_DESCRIPTION="Google Cloud C++ Client Libraries (${{ matrix.shard }})" \
+          -D CPACK_INSTALL_CMAKE_PROJECTS="$(pwd);google-cloud-cpp-${{ matrix.shard }};ALL;/" \
+          -D CPACK_DEBIAN_PACKAGE_MAINTAINER='dev@hekster.org' \
+          -D CPACK_DEBIAN_PACKAGE_SECTION=devel \
+          -D CPACK_DEBIAN_PACKAGE_PRIORITY=optional \
+          -D CPACK_DEBIAN_PACKAGE_SHLIBDEPS=ON \
+          -D CPACK_DEBIAN_PACKAGE_DEPENDS='libabsl-dev, libgrpc++-dev, libcurl4-openssl-dev, nlohmann-json3-dev, protobuf-compiler, libprotobuf-dev, protobuf-compiler-grpc' \
+          -D CPACK_PACKAGE_FILE_NAME="google-cloud-cpp-${{ matrix.shard }}-2.44.0-Linux-arm64" \
+          -D CPACK_CMAKE_GENERATOR="Unix Makefiles"
