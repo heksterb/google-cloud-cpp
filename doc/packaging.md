@@ -1480,7 +1480,7 @@ cmake --build cmake-out --target install
 [^3]: Only some libraries (Compute, SQL Admin, and Google Cloud Storage) require
     this dependency.
 
-[^4]: Only the Google Cloud Storage client library requires this dependency.
+[^4]: Only the Google Cloud Storage and Bigtable client libraries require this dependency.
 
 [^5]: The Google Cloud Storage client does not require Protobuf.
 

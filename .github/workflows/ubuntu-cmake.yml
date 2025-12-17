@@ -5,24 +5,105 @@ on:
   workflow_dispatch:
     inputs:
       checkout-ref:
-        required: true
-        description: "The ref we want to compile"
         type: string
-      full-matrix:
         required: true
-        description: "Build the full matrix"
+        description: "The ref to build"
+      version:
+        type: string
+        required: true
+        description: "Package version number (conformant)"
+      full-matrix:
         type: boolean
+        description: "Build the full matrix"
+        required: false
+        default: false
 
 permissions:
   contents: read
 
 env:
+  # Unfortunately, it is not enough to just change this string here:
+  # it occurs in a few other places here as well
   CRC32C_VERSION: 1.1.2
-    
+
 jobs:
-  cmake:
-    name: cmake + ${{ matrix.os }} + ${{ matrix.shard }}
-    runs-on: ${{ matrix.os }}
+  crc32c:
+    name: cmake + ${{ matrix.os }} + ${{ matrix.architecture }} + crc32c
+    runs-on: ${{ matrix.architecture == 'x64' && format('{0}', matrix.os) || format('{0}-arm', matrix.os) }}
+    env:
+      # *** reference to Workflow-level environment variable appears not to work
+      CRC_PACKAGE_FILE_NAME: "google-crc32c-1.1.2-Linux-${{ matrix.architecture }}.deb"
+    strategy:
+      matrix:
+        os: [ ubuntu-24.04 ]
+        architecture: [ x64, arm64 ]
+    steps:
+    - name: Install prerequisites
+      run: |
+        sudo apt update
+        # observed dependencies
+        sudo apt --no-install-recommends install -y cmake
+        # specified dependencies
+    
+    - name: Download google-crc32c
+      run: |
+        CRC32C_TARBALL=${CRC32C_VERSION}.tar.gz
+        curl --silent --remote-name --location https://github.com/google/crc32c/archive/${CRC32C_TARBALL}
+        tar xfz ${CRC32C_TARBALL}
+    
+    - name: Configure google-crc32c
+      working-directory: crc32c-${{ env.CRC32C_VERSION }}/
+      run: |
+        # no need to build shared libraries; only ever used for this SDK
+        cmake -S . -B build \
+          -DCMAKE_BUILD_TYPE=Release \
+          -DBUILD_SHARED_LIBS=no \
+          -DCRC32C_BUILD_TESTS=OFF \
+          -DCRC32C_BUILD_BENCHMARKS=OFF \
+          -DCRC32C_USE_GLOG=OFF
+    
+    - name: Build google-crc32c
+      working-directory: crc32c-${{ env.CRC32C_VERSION }}/
+      run: cmake --build build/
+    
+    - name: Package google-crc32c
+      id: package-google-crc32
+      working-directory: crc32c-${{ env.CRC32C_VERSION }}/
+      run: |
+        cpack -G DEB \
+          -D CPACK_PACKAGE_NAME="libcrc32c" \
+          -D CPACK_PACKAGE_VERSION=$CRC32C_VERSION \
+          -D CPACK_PACKAGE_VENDOR="Google" \
+          -D CPACK_PACKAGE_DESCRIPTION="Google CRC32C Libraries" \
+          -D CPACK_INSTALL_CMAKE_PROJECTS="${PWD}/build;google-crc32c;ALL;/" \
+          -D CPACK_DEBIAN_PACKAGE_MAINTAINER="dev@hekster.org" \
+          -D CPACK_DEBIAN_PACKAGE_SECTION="devel" \
+          -D CPACK_DEBIAN_PACKAGE_PRIORITY="optional" \
+          -D CPACK_DEBIAN_PACKAGE_SHLIBDEPS=OFF \
+          -D CPACK_PACKAGE_FILE_NAME=${CRC_PACKAGE_FILE_NAME%.deb} \
+          -D CPACK_CMAKE_GENERATOR="Unix Makefiles"
+    
+    - name: Save google-crc32
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ env.CRC_PACKAGE_FILE_NAME }}
+        if-no-files-found: error
+        path: crc32c-${{ env.CRC32C_VERSION }}/${{ env.CRC_PACKAGE_FILE_NAME }}
+    
+  
+  cloud-cpp:
+    name: cmake + ${{ matrix.os }} + ${{ matrix.architecture }} + ${{ matrix.shard }}
+    needs: crc32c
+    # GitHub Ubuntu runner has no architecture suffix for 'x86'
+    # It would be better, of course, not to hard-code here the knowledge that there are
+    # only two architectures.  I can't find a way to map the architecture name to
+    # the proper suffix.  I can't find any way of making a computed property hack to work
+    # without negating the 'exclude-from-full' trick.  So hard-coding it is
+    runs-on: ${{ matrix.architecture == 'x64' && format('{0}', matrix.os) || format('{0}-arm', matrix.os) }}
+    env:
+      # *** reference to Workflow-level environment variable appears not to work
+      CRC_PACKAGE_FILE_NAME: "google-crc32c-1.1.2-Linux-${{ matrix.architecture }}.deb"
+      CPP_PACKAGE_FILE_NAME: "google-cloud-cpp-${{ matrix.shard }}-${{ inputs.version }}-Linux-${{ matrix.architecture }}.deb"
     permissions:
       contents: 'read'
     strategy:
@@ -31,7 +112,8 @@ jobs:
       matrix:
         exclude-from-full-trick: [ true ]
         os: [ ubuntu-24.04 ]
-        shard: [ Core2 ]
+        architecture: [ x64, arm64 ]
+        shard: [ Core1, Core2, Core3, Compute, AIPlatform, Shard1, Shard2, Shard3, Shard4, Shard5, Other ]
         exclude:
         # Only full builds include shards with generated code.
         - exclude-from-full-trick: ${{ ! inputs.full-matrix }}
@@ -53,11 +135,11 @@ jobs:
     steps:
     - name: Install prerequisites
       run: |
-        apt update
+        sudo apt update
         # observed dependencies
-        apt --no-install-recommends install -y cmake
+        sudo apt --no-install-recommends install -y cmake
         # specified dependencies
-        apt --no-install-recommends install -y \
+        sudo apt --no-install-recommends install -y \
             libabsl-dev \
             libcurl4-openssl-dev \
             libgrpc++-dev \
@@ -66,11 +148,21 @@ jobs:
             protobuf-compiler \
             nlohmann-json3-dev
     
-    - name: Dynamic Configuration
+    # crc32c only needed in specific cases
+    - name: Load google-crc32c
+      if: matrix.shard == 'Core1' || matrix.shard == 'Core2'
+      uses: actions/download-artifact@v5
+      with:
+        name: ${{ env.CRC_PACKAGE_FILE_NAME }}
+    
+    - name: Install google-crc32c
+      if: matrix.shard == 'Core1' || matrix.shard == 'Core2'
+      run: sudo dpkg --install ${{ env.CRC_PACKAGE_FILE_NAME }}
+    
+    - name: Dynamic configuration
       id: dynamic
       shell: bash
       run: |
-        echo "vcpkg-version=$(cat ci/etc/vcpkg-version.txt)" >> "${GITHUB_OUTPUT}"
         core1_features=(
           bigtable
           spanner
@@ -248,50 +340,9 @@ jobs:
         fi
     
     - name: Check out code
-      uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5
+      uses: actions/checkout@v5
       with:
         ref: ${{ inputs.checkout-ref }}
-    
-    - name: Download google-crc32c
-      run: |
-        # ***** latest version? or version on GitHub README
-        curl --silent --remote-name --location https://github.com/google/crc32c/archive/${CRC32C_VERSION}.tar.gz
-        tar xfz ${CRC32C_VERSION}.tar.gz
-    
-    - name: Configure google-crc32c
-      working-directory: crc32c-${{ env.CRC32C_VERSION }}/
-      run: |
-        # no need to build shared libraries; only ever used for this SDK
-        cmake -S . -B build \
-          -DCMAKE_BUILD_TYPE=Release \
-          -DBUILD_SHARED_LIBS=no \
-          -DCRC32C_BUILD_TESTS=OFF \
-          -DCRC32C_BUILD_BENCHMARKS=OFF \
-          -DCRC32C_USE_GLOG=OFF
-    
-    - name: Build google-crc32c
-      working-directory: crc32c-${{ env.CRC32C_VERSION }}/
-      run: cmake --build build
-    
-    - name: Install google-crc32c
-      working-directory: crc32c-${{ env.CRC32C_VERSION }}/
-      run: cmake --build build --target install
-    
-    - name: Package google-crc32c
-      working-directory: crc32c-${{ env.CRC32C_VERSION }}/build
-      run: |
-        cpack -G DEB \
-          -D CPACK_PACKAGE_NAME="google-crc32c" \
-          -D CPACK_PACKAGE_VERSION=$CRC32C_VERSION \
-          -D CPACK_PACKAGE_VENDOR="Google" \
-          -D CPACK_PACKAGE_DESCRIPTION="Google CRC32C Libraries" \
-          -D CPACK_INSTALL_CMAKE_PROJECTS="$(pwd);google-crc32c;ALL;/" \
-          -D CPACK_DEBIAN_PACKAGE_MAINTAINER="dev@hekster.org" \
-          -D CPACK_DEBIAN_PACKAGE_SECTION="devel" \
-          -D CPACK_DEBIAN_PACKAGE_PRIORITY="optional" \
-          -D CPACK_DEBIAN_PACKAGE_SHLIBDEPS=OFF \
-          -D CPACK_PACKAGE_FILE_NAME="google-crc32c-${CRC32C_VERSION}-Linux-arm64" \
-          -D CPACK_CMAKE_GENERATOR="Unix Makefiles"
     
     - name: Configure google-cloud-cpp
       run: |
@@ -300,24 +351,31 @@ jobs:
           -DBUILD_TESTING=OFF \
           -DGOOGLE_CLOUD_CPP_WITH_MOCKS=OFF \
           -DGOOGLE_CLOUD_CPP_ENABLE_EXAMPLES=OFF \
-          -DGOOGLE_CLOUD_CPP_ENABLE=${{ matrix.shard }}
+          -DGOOGLE_CLOUD_CPP_ENABLE=${{ steps.dynamic.outputs.features }}
     
     - name: Build google-cloud-cpp
-      run: cmake --build build -j$(nproc)
+      run: cmake --build build/ -j$(nproc)
     
     - name: Package google-cloud-cpp
-      working-directory: build/
+      id: package-google-cloud-cpp
       run: |
         cpack -G DEB \
-          -D CPACK_PACKAGE_NAME="google-cloud-cpp-${{ matrix.shard }}" \
-          -D CPACK_PACKAGE_VERSION="2.44.0" \
+          -D CPACK_PACKAGE_NAME="libgoogle-cloud-cpp-${{ matrix.shard }}" \
+          -D CPACK_PACKAGE_VERSION="${{ inputs.version }}" \
           -D CPACK_PACKAGE_VENDOR=Google \
           -D CPACK_PACKAGE_DESCRIPTION="Google Cloud C++ Client Libraries (${{ matrix.shard }})" \
-          -D CPACK_INSTALL_CMAKE_PROJECTS="$(pwd);google-cloud-cpp-${{ matrix.shard }};ALL;/" \
+          -D CPACK_INSTALL_CMAKE_PROJECTS="${PWD}/build;google-cloud-cpp-${{ matrix.shard }};ALL;/" \
           -D CPACK_DEBIAN_PACKAGE_MAINTAINER='dev@hekster.org' \
           -D CPACK_DEBIAN_PACKAGE_SECTION=devel \
           -D CPACK_DEBIAN_PACKAGE_PRIORITY=optional \
           -D CPACK_DEBIAN_PACKAGE_SHLIBDEPS=ON \
-          -D CPACK_DEBIAN_PACKAGE_DEPENDS='libabsl-dev, libgrpc++-dev, libcurl4-openssl-dev, nlohmann-json3-dev, protobuf-compiler, libprotobuf-dev, protobuf-compiler-grpc' \
-          -D CPACK_PACKAGE_FILE_NAME="google-cloud-cpp-${{ matrix.shard }}-2.44.0-Linux-arm64" \
+          -D CPACK_DEBIAN_PACKAGE_DEPENDS="libabsl-dev, libgrpc++-dev, libprotobuf32t64${{ (matrix.shard == 'Core1' || matrix.shard == 'Core2') && ', libcrc32c' || '' }}" \
+          -D CPACK_PACKAGE_FILE_NAME=${CPP_PACKAGE_FILE_NAME%.deb} \
           -D CPACK_CMAKE_GENERATOR="Unix Makefiles"
+    
+    - name: Save google-cloud-cpp
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ env.CPP_PACKAGE_FILE_NAME }}
+        if-no-files-found: error
+        path: ${{ env.CPP_PACKAGE_FILE_NAME }}
